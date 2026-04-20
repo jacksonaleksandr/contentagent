@@ -430,11 +430,19 @@ async def analyze_patterns() -> str:
 # ══════════════════════════════════════════
 
 async def ref_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = " ".join(context.args) if context.args else ""
+    # Берём URL из args (если /ref ссылка) или прямо из текста сообщения
+    if context.args:
+        url = " ".join(context.args)
+    else:
+        text = update.message.text.strip()
+        url_match = re.search(r'https?://[^\s]*instagram\.com[^\s]*', text)
+        if not url_match:
+            url_match = re.search(r'https?://instagr\.am[^\s]*', text)
+        url = url_match.group(0).rstrip(".,)") if url_match else text
 
-    if not url or "instagram.com" not in url:
+    if not url or ("instagram.com" not in url and "instagr.am" not in url):
         await update.message.reply_text(
-            "Отправь ссылку так:\n/ref https://www.instagram.com/reel/..."
+            "Отправь ссылку на Instagram Reels — просто скинь её сюда 👇"
         )
         return ConversationHandler.END
 
@@ -454,7 +462,7 @@ async def ref_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(
-            f"⚠️ Субтитры не найдены, но продолжим по метрикам.\n\n"
+            "⚠️ Субтитры не найдены, но продолжим по метрикам.\n\n"
             "👁 Сколько просмотров? (например: 3.2М или 850К)"
         )
 
@@ -853,22 +861,51 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ══════════════════════════════════════════
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ловит любые сообщения — если ссылка Instagram, сразу запускает флоу"""
+    text = update.message.text.strip()
+
+    if "instagram.com" in text or "instagr.am" in text:
+        # Извлекаем чистую ссылку
+        url_match = re.search(r'https?://[^\s]*instagram\.com[^\s]*', text)
+        if not url_match:
+            url_match = re.search(r'https?://instagr\.am[^\s]*', text)
+        url = url_match.group(0).rstrip(".,)") if url_match else text
+
+        # Передаём в ref_start через args
+        context.args = [url]
+        return await ref_start(update, context)
+
+    await update.message.reply_text(
+        "Кинь ссылку Instagram или выбери действие 👇",
+        reply_markup=main_menu()
+    )
+
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # ConversationHandler для добавления референса
     ref_handler = ConversationHandler(
-        entry_points=[CommandHandler("ref", ref_start)],
+        entry_points=[
+            CommandHandler("ref", ref_start),
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND &
+                filters.Regex(r'https?://.*instagram'),
+                ref_start
+            ),
+        ],
         states={
-            REF_VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_views)],
-            REF_LIKES: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_likes)],
+            REF_VIEWS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_views)],
+            REF_LIKES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_likes)],
             REF_COMMENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_comments)],
-            REF_SAVES: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_saves)],
-            REF_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_age)],
-            REF_WHY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_why)],
-            REF_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_confirm)],
+            REF_SAVES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_saves)],
+            REF_AGE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_age)],
+            REF_WHY:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_why)],
+            REF_CONFIRM:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ref_confirm)],
         },
         fallbacks=[CommandHandler("cancel", ref_cancel)],
+        per_message=False,
+        per_chat=True,
     )
 
     app.add_handler(ref_handler)
@@ -882,6 +919,7 @@ def main():
     app.add_handler(CommandHandler("telegram", cmd_telegram_posts))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CallbackQueryHandler(menu_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
