@@ -292,11 +292,14 @@ async def download_and_transcribe(url: str) -> dict:
 SYSTEM = """Ты — профессиональный контент-агент для видеографа в нише "ИИ + видеопроизводство".
 Язык: только русский. Тон: живой, конкретный, без воды."""
 
+# Модель берётся из переменной окружения — легко менять без изменения кода
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
 async def ask_claude(prompt: str) -> str:
     try:
         response = await asyncio.to_thread(
             claude.messages.create,
-            model="claude-sonnet-4-5",
+            model=CLAUDE_MODEL,
             max_tokens=1000,
             system=SYSTEM,
             messages=[{"role": "user", "content": prompt}]
