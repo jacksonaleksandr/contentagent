@@ -186,7 +186,6 @@ async def download_and_transcribe(url: str) -> dict:
             cmd = [
                 "yt-dlp",
                 "--extract-audio",
-                "--audio-format", "mp3",
                 "--audio-quality", "5",
                 "--write-description",
                 "--write-info-json",
@@ -222,7 +221,13 @@ async def download_and_transcribe(url: str) -> dict:
                         content["title"] = info["title"]
 
             # Транскрипция через OpenAI Whisper API
-            audio_path = f"{tmpdir}/video.mp3"
+            # Ищем аудио в любом формате
+            audio_path = None
+            for ext in ["mp3", "m4a", "mp4", "webm", "ogg", "wav"]:
+                candidate = f"{tmpdir}/video.{ext}"
+                if os.path.exists(candidate):
+                    audio_path = candidate
+                    break
             if os.path.exists(audio_path) and OPENAI_API_KEY:
                 try:
                     import openai
