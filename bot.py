@@ -83,6 +83,7 @@ def save_to_sheets(data: dict) -> bool:
     try:
         ws = get_sheet()
         if not ws:
+            logger.error("save_to_sheets: get_sheet() returned None")
             return False
 
         # Считаем ER
@@ -120,7 +121,7 @@ def save_to_sheets(data: dict) -> bool:
         ws.append_row(row)
         return True
     except Exception as e:
-        logger.error(f"Save error: {e}")
+        logger.error(f"save_to_sheets error: {e}")
         return False
 
 
@@ -239,7 +240,7 @@ async def download_and_transcribe(url: str) -> dict:
                             response_format="text"
                         )
                     if transcript and len(str(transcript)) > 20:
-                        content["subtitles"] = str(transcript)[:4000]
+                        content["subtitles"] = str(transcript)[:8000]
                         content["transcription_method"] = "whisper-api"
                 except Exception as e:
                     content["whisper_error"] = str(e)
@@ -625,19 +626,29 @@ async def ref_why(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ref_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if "да" in update.message.text.lower() or "✅" in update.message.text:
+    text = update.message.text.lower() if update.message else ""
+    if "да" in text or "✅" in text or "сохранить" in text:
         data = user_data_store.get(user_id, {})
+        if not data:
+            await update.message.reply_text(
+                "❌ Данные потерялись. Попробуй добавить референс заново.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        await update.message.reply_text("💾 Сохраняю...", reply_markup=ReplyKeyboardRemove())
         success = await asyncio.to_thread(save_to_sheets, data)
 
         if success:
             await update.message.reply_text(
-                "✅ Сохранено в базу референсов!\n\n"
-                "Используй /patterns чтобы увидеть паттерны всей базы.",
-                reply_markup=ReplyKeyboardRemove()
+                "✅ Сохранено в Google Sheets!\n\n"
+                "Используй /patterns чтобы увидеть паттерны базы.",
+                reply_markup=main_menu()
             )
         else:
             await update.message.reply_text(
-                "❌ Ошибка сохранения. Проверь настройки Google Sheets.",
+                "❌ Ошибка сохранения в таблицу.\n\n"
+                "Проверь: дал ли ты доступ сервисному аккаунту к таблице?",
                 reply_markup=ReplyKeyboardRemove()
             )
     else:
