@@ -171,36 +171,94 @@ def export_for_claude() -> str:
 async def download_and_transcribe(url: str) -> dict:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Скачиваем субтитры и описание
-            cmd = [
+            content = {"url": url}
+
+            # Шаг 1 — пробуем скачать субтитры (быстро, без аудио)
+            cmd_subs = [
                 "yt-dlp",
                 "--write-auto-subs",
-                "--sub-lang", "ru,en",
+                "--write-subs",
+                "--sub-lang", "ru,en,ru-RU,en-US",
+                "--sub-format", "vtt/srt/best",
                 "--skip-download",
                 "--write-description",
-                "--no-playlist",
                 "--write-info-json",
+                "--no-playlist",
                 "-o", f"{tmpdir}/video",
                 url
             ]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            subprocess.run(cmd_subs, capture_output=True, text=True, timeout=40)
 
-            content = {"url": url}
-
-            # Субтитры
-            for ext in [".ru.vtt", ".en.vtt", ".ru.srt", ".en.srt"]:
+            # Ищем субтитры во всех возможных форматах
+            found_sub = False
+            for ext in [
+                ".ru.vtt", ".en.vtt",
+                ".ru-RU.vtt", ".en-US.vtt",
+                ".ru.srt", ".en.srt",
+                ".ru-RU.srt", ".en-US.srt"
+            ]:
                 sub_path = f"{tmpdir}/video{ext}"
                 if os.path.exists(sub_path):
                     with open(sub_path, "r", encoding="utf-8") as f:
                         raw = f.read()
-                        clean = re.sub(r"<[^>]+>", "", raw)
-                        clean = re.sub(r"\d+:\d+:\d+[\.,]\d+ --> \d+:\d+:\d+[\.,]\d+", "", clean)
+                        # Чистим VTT/SRT разметку
+                        clean = re.sub(r"<\d{2}:\d{2}:\d{2}\.\d{3}>", "", raw)
+                        clean = re.sub(r"<[^>]+>", "", clean)
+                        clean = re.sub(r"\d+:\d+:\d+[\.,]\d+ --> \d+:\d+:\d+[\.,]\d+.*", "", clean)
                         clean = re.sub(r"^\d+$", "", clean, flags=re.MULTILINE)
-                        clean = re.sub(r"WEBVTT.*?\n", "", clean)
-                        clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
-                        content["subtitles"] = clean[:3000]
-                        content["lang"] = "ru" if ".ru." in ext else "en"
+                        clean = re.sub(r"^WEBVTT.*$", "", clean, flags=re.MULTILINE)
+                        clean = re.sub(r"^NOTE.*$", "", clean, flags=re.MULTILINE)
+                        clean = re.sub(r"\n{3,}", "\n", clean).strip()
+                        # Убираем дубли строк
+                        lines = clean.split("\n")
+                        unique = []
+                        prev = ""
+                        for line in lines:
+                            line = line.strip()
+                            if line and line != prev:
+                                unique.append(line)
+                                prev = line
+                        clean = " ".join(unique)
+                        if len(clean) > 50:  # Только если есть реальный текст
+                            content["subtitles"] = clean[:4000]
+                            content["lang"] = "ru" if "ru" in ext else "en"
+                            found_sub = True
                     break
+
+            # Шаг 2 — если субтитров нет, скачиваем аудио и транскрибируем через Whisper
+            if not found_sub:
+                cmd_audio = [
+                    "yt-dlp",
+                    "--extract-audio",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "5",
+                    "--no-playlist",
+                    "-o", f"{tmpdir}/audio.%(ext)s",
+                    url
+                ]
+                audio_result = subprocess.run(
+                    cmd_audio, capture_output=True, text=True, timeout=60
+                )
+
+                audio_path = f"{tmpdir}/audio.mp3"
+                if os.path.exists(audio_path):
+                    try:
+                        import whisper
+                        model = whisper.load_model("base")
+                        result = model.transcribe(
+                            audio_path,
+                            language=None,  # автоопределение языка
+                            task="transcribe"
+                        )
+                        transcript = result.get("text", "").strip()
+                        if transcript:
+                            content["subtitles"] = transcript[:4000]
+                            content["lang"] = result.get("language", "unknown")
+                            content["transcription_method"] = "whisper"
+                    except ImportError:
+                        content["no_audio_transcription"] = True
+                    except Exception as e:
+                        content["whisper_error"] = str(e)
 
             # Описание
             desc_path = f"{tmpdir}/video.description"
@@ -208,18 +266,22 @@ async def download_and_transcribe(url: str) -> dict:
                 with open(desc_path, "r", encoding="utf-8") as f:
                     content["description"] = f.read()[:1000]
 
-            # Метаданные (длина видео)
+            # Длина видео
             info_path = f"{tmpdir}/video.info.json"
             if os.path.exists(info_path):
                 with open(info_path, "r", encoding="utf-8") as f:
                     info = json.load(f)
                     duration = info.get("duration", 0)
-                    content["duration"] = f"{duration} сек" if duration else "неизвестно"
+                    content["duration"] = f"{int(duration)} сек" if duration else "неизвестно"
+                    # Берём заголовок если есть
+                    title = info.get("title", "")
+                    if title:
+                        content["title"] = title
 
             return content
 
     except subprocess.TimeoutExpired:
-        return {"url": url, "error": "Таймаут"}
+        return {"url": url, "error": "Таймаут при скачивании"}
     except Exception as e:
         return {"url": url, "error": str(e)}
 
@@ -234,7 +296,7 @@ async def ask_claude(prompt: str) -> str:
     try:
         response = await asyncio.to_thread(
             claude.messages.create,
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=1000,
             system=SYSTEM,
             messages=[{"role": "user", "content": prompt}]
