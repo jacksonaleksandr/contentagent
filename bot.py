@@ -23,6 +23,7 @@ CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
 GOOGLE_SHEETS_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+INSTAGRAM_COOKIES = os.environ.get("INSTAGRAM_COOKIES", "")
 
 # ══════════════════════════════════════════
 # ИНИЦИАЛИЗАЦИЯ
@@ -174,8 +175,14 @@ async def download_and_transcribe(url: str) -> dict:
         with tempfile.TemporaryDirectory() as tmpdir:
             content = {"url": url}
 
-            # Шаг 1 — скачиваем аудио + описание + мета
-            await update_status(f"⬇️ Скачиваю аудио...")
+            # Сохраняем cookies в файл если есть
+            cookies_path = None
+            if INSTAGRAM_COOKIES:
+                cookies_path = f"{tmpdir}/cookies.txt"
+                with open(cookies_path, "w") as f:
+                    f.write(INSTAGRAM_COOKIES)
+
+            # Базовые параметры yt-dlp
             cmd = [
                 "yt-dlp",
                 "--extract-audio",
@@ -184,10 +191,19 @@ async def download_and_transcribe(url: str) -> dict:
                 "--write-description",
                 "--write-info-json",
                 "--no-playlist",
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
                 "-o", f"{tmpdir}/video.%(ext)s",
                 url
             ]
+
+            # Добавляем cookies если есть
+            if cookies_path:
+                cmd.insert(1, "--cookies")
+                cmd.insert(2, cookies_path)
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            logger.info(f"yt-dlp stdout: {result.stdout[-500:] if result.stdout else ''}")
+            logger.info(f"yt-dlp stderr: {result.stderr[-500:] if result.stderr else ''}")
 
             # Описание
             desc_path = f"{tmpdir}/video.description"
@@ -205,7 +221,7 @@ async def download_and_transcribe(url: str) -> dict:
                     if info.get("title"):
                         content["title"] = info["title"]
 
-            # Шаг 2 — транскрибируем через OpenAI Whisper API
+            # Транскрипция через OpenAI Whisper API
             audio_path = f"{tmpdir}/video.mp3"
             if os.path.exists(audio_path) and OPENAI_API_KEY:
                 try:
@@ -222,6 +238,14 @@ async def download_and_transcribe(url: str) -> dict:
                         content["transcription_method"] = "whisper-api"
                 except Exception as e:
                     content["whisper_error"] = str(e)
+                    logger.error(f"Whisper error: {e}")
+            elif os.path.exists(audio_path) and not OPENAI_API_KEY:
+                content["whisper_error"] = "OPENAI_API_KEY не задан"
+            else:
+                # Логируем что именно скачалось
+                files = os.listdir(tmpdir)
+                logger.info(f"Files in tmpdir: {files}")
+                content["download_error"] = f"Аудио не скачалось. Файлы: {files}. Stderr: {result.stderr[-300:]}"
 
             return content
 
@@ -229,11 +253,6 @@ async def download_and_transcribe(url: str) -> dict:
         return {"url": url, "error": "Таймаут при скачивании"}
     except Exception as e:
         return {"url": url, "error": str(e)}
-
-
-# Заглушка — используется только внутри download если нужно
-async def update_status(msg):
-    pass
 
 # ══════════════════════════════════════════
 # CLAUDE API
@@ -478,14 +497,19 @@ async def ref_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif content.get("whisper_error"):
         await update.message.reply_text(
-            f"⚠️ Ошибка транскрипции: {content['whisper_error'][:100]}\n\n"
-            "Продолжим анализ по метрикам и описанию.\n\n"
+            f"⚠️ Ошибка транскрипции: {content['whisper_error'][:150]}\n\n"
+            "Продолжим по метрикам.\n\n"
+            "👁 Сколько просмотров?"
+        )
+    elif content.get("download_error"):
+        await update.message.reply_text(
+            f"⚠️ {content['download_error'][:300]}\n\n"
             "👁 Сколько просмотров?"
         )
     else:
         await update.message.reply_text(
-            "⚠️ Аудио не удалось скачать (Instagram ограничивает доступ).\n\n"
-            "Продолжим анализ по метрикам — это тоже даёт хороший результат.\n\n"
+            "⚠️ Аудио не удалось скачать.\n\n"
+            "Продолжим по метрикам.\n\n"
             "👁 Сколько просмотров? (например: 3.2М или 850К)"
         )
 
