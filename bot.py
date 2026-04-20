@@ -642,14 +642,15 @@ async def ref_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             await update.message.reply_text(
                 "✅ Сохранено в Google Sheets!\n\n"
-                "Используй /patterns чтобы увидеть паттерны базы.",
+                "Кидай следующую ссылку или выбери действие 👇",
                 reply_markup=main_menu()
             )
         else:
             await update.message.reply_text(
-                "❌ Ошибка сохранения в таблицу.\n\n"
-                "Проверь: дал ли ты доступ сервисному аккаунту к таблице?",
-                reply_markup=ReplyKeyboardRemove()
+                "❌ Ошибка сохранения.\n\n"
+                "Проверь: дал ли ты доступ сервисному аккаунту к таблице?\n"
+                "Посмотри логи в Railway для деталей.",
+                reply_markup=main_menu()
             )
     else:
         await update.message.reply_text(
@@ -937,17 +938,14 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ловит любые сообщения — если ссылка Instagram, сразу запускает флоу"""
+    """Fallback — только для сообщений которые не поймал ConversationHandler"""
     text = update.message.text.strip()
 
+    # Ссылки Instagram должны обрабатываться через ConversationHandler
+    # Этот handler срабатывает только если ConversationHandler не поймал
     if "instagram.com" in text or "instagr.am" in text:
-        # Извлекаем чистую ссылку
         url_match = re.search(r'https?://[^\s]*instagram\.com[^\s]*', text)
-        if not url_match:
-            url_match = re.search(r'https?://instagr\.am[^\s]*', text)
         url = url_match.group(0).rstrip(".,)") if url_match else text
-
-        # Передаём в ref_start через args
         context.args = [url]
         return await ref_start(update, context)
 
