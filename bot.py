@@ -655,6 +655,18 @@ async def ref_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОСТАЛЬНЫЕ КОМАНДЫ
 # ══════════════════════════════════════════
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = f"""🔧 DEBUG v2.0
+
+CLAUDE_MODEL: {CLAUDE_MODEL}
+CLAUDE_API_KEY: {'✅' if CLAUDE_API_KEY else '❌'}
+OPENAI_API_KEY: {'✅' if OPENAI_API_KEY else '❌'}
+INSTAGRAM_COOKIES: {'✅ ' + str(len(INSTAGRAM_COOKIES)) + ' символов' if INSTAGRAM_COOKIES else '❌ нет'}
+GOOGLE_SHEETS_ID: {'✅' if GOOGLE_SHEETS_ID else '❌'}
+"""
+    await update.message.reply_text(status)
+
+
 def main_menu():
     keyboard = [
         [
@@ -957,6 +969,7 @@ def main():
 
     app.add_handler(ref_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(CommandHandler("patterns", cmd_patterns))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("hooks", cmd_hooks))
