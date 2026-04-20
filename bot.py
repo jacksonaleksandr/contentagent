@@ -22,6 +22,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
 GOOGLE_SHEETS_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ══════════════════════════════════════════
 # ИНИЦИАЛИЗАЦИЯ
@@ -173,92 +174,20 @@ async def download_and_transcribe(url: str) -> dict:
         with tempfile.TemporaryDirectory() as tmpdir:
             content = {"url": url}
 
-            # Шаг 1 — пробуем скачать субтитры (быстро, без аудио)
-            cmd_subs = [
+            # Шаг 1 — скачиваем аудио + описание + мета
+            await update_status(f"⬇️ Скачиваю аудио...")
+            cmd = [
                 "yt-dlp",
-                "--write-auto-subs",
-                "--write-subs",
-                "--sub-lang", "ru,en,ru-RU,en-US",
-                "--sub-format", "vtt/srt/best",
-                "--skip-download",
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "--audio-quality", "5",
                 "--write-description",
                 "--write-info-json",
                 "--no-playlist",
-                "-o", f"{tmpdir}/video",
+                "-o", f"{tmpdir}/video.%(ext)s",
                 url
             ]
-            subprocess.run(cmd_subs, capture_output=True, text=True, timeout=40)
-
-            # Ищем субтитры во всех возможных форматах
-            found_sub = False
-            for ext in [
-                ".ru.vtt", ".en.vtt",
-                ".ru-RU.vtt", ".en-US.vtt",
-                ".ru.srt", ".en.srt",
-                ".ru-RU.srt", ".en-US.srt"
-            ]:
-                sub_path = f"{tmpdir}/video{ext}"
-                if os.path.exists(sub_path):
-                    with open(sub_path, "r", encoding="utf-8") as f:
-                        raw = f.read()
-                        # Чистим VTT/SRT разметку
-                        clean = re.sub(r"<\d{2}:\d{2}:\d{2}\.\d{3}>", "", raw)
-                        clean = re.sub(r"<[^>]+>", "", clean)
-                        clean = re.sub(r"\d+:\d+:\d+[\.,]\d+ --> \d+:\d+:\d+[\.,]\d+.*", "", clean)
-                        clean = re.sub(r"^\d+$", "", clean, flags=re.MULTILINE)
-                        clean = re.sub(r"^WEBVTT.*$", "", clean, flags=re.MULTILINE)
-                        clean = re.sub(r"^NOTE.*$", "", clean, flags=re.MULTILINE)
-                        clean = re.sub(r"\n{3,}", "\n", clean).strip()
-                        # Убираем дубли строк
-                        lines = clean.split("\n")
-                        unique = []
-                        prev = ""
-                        for line in lines:
-                            line = line.strip()
-                            if line and line != prev:
-                                unique.append(line)
-                                prev = line
-                        clean = " ".join(unique)
-                        if len(clean) > 50:  # Только если есть реальный текст
-                            content["subtitles"] = clean[:4000]
-                            content["lang"] = "ru" if "ru" in ext else "en"
-                            found_sub = True
-                    break
-
-            # Шаг 2 — если субтитров нет, скачиваем аудио и транскрибируем через Whisper
-            if not found_sub:
-                cmd_audio = [
-                    "yt-dlp",
-                    "--extract-audio",
-                    "--audio-format", "mp3",
-                    "--audio-quality", "5",
-                    "--no-playlist",
-                    "-o", f"{tmpdir}/audio.%(ext)s",
-                    url
-                ]
-                audio_result = subprocess.run(
-                    cmd_audio, capture_output=True, text=True, timeout=60
-                )
-
-                audio_path = f"{tmpdir}/audio.mp3"
-                if os.path.exists(audio_path):
-                    try:
-                        import whisper
-                        model = whisper.load_model("base")
-                        result = model.transcribe(
-                            audio_path,
-                            language=None,  # автоопределение языка
-                            task="transcribe"
-                        )
-                        transcript = result.get("text", "").strip()
-                        if transcript:
-                            content["subtitles"] = transcript[:4000]
-                            content["lang"] = result.get("language", "unknown")
-                            content["transcription_method"] = "whisper"
-                    except ImportError:
-                        content["no_audio_transcription"] = True
-                    except Exception as e:
-                        content["whisper_error"] = str(e)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
 
             # Описание
             desc_path = f"{tmpdir}/video.description"
@@ -266,17 +195,33 @@ async def download_and_transcribe(url: str) -> dict:
                 with open(desc_path, "r", encoding="utf-8") as f:
                     content["description"] = f.read()[:1000]
 
-            # Длина видео
+            # Метаданные
             info_path = f"{tmpdir}/video.info.json"
             if os.path.exists(info_path):
                 with open(info_path, "r", encoding="utf-8") as f:
                     info = json.load(f)
                     duration = info.get("duration", 0)
-                    content["duration"] = f"{int(duration)} сек" if duration else "неизвестно"
-                    # Берём заголовок если есть
-                    title = info.get("title", "")
-                    if title:
-                        content["title"] = title
+                    content["duration"] = f"{int(duration)} сек" if duration else "?"
+                    if info.get("title"):
+                        content["title"] = info["title"]
+
+            # Шаг 2 — транскрибируем через OpenAI Whisper API
+            audio_path = f"{tmpdir}/video.mp3"
+            if os.path.exists(audio_path) and OPENAI_API_KEY:
+                try:
+                    import openai
+                    openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+                    with open(audio_path, "rb") as audio_file:
+                        transcript = openai_client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file,
+                            response_format="text"
+                        )
+                    if transcript and len(str(transcript)) > 20:
+                        content["subtitles"] = str(transcript)[:4000]
+                        content["transcription_method"] = "whisper-api"
+                except Exception as e:
+                    content["whisper_error"] = str(e)
 
             return content
 
@@ -284,6 +229,11 @@ async def download_and_transcribe(url: str) -> dict:
         return {"url": url, "error": "Таймаут при скачивании"}
     except Exception as e:
         return {"url": url, "error": str(e)}
+
+
+# Заглушка — используется только внутри download если нужно
+async def update_status(msg):
+    pass
 
 # ══════════════════════════════════════════
 # CLAUDE API
@@ -514,20 +464,28 @@ async def ref_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data_store[user_id] = {"url": url}
 
-    await update.message.reply_text("🔍 Скачиваю видео...")
+    await update.message.reply_text("🔍 Скачиваю и транскрибирую аудио... (~30 сек)")
 
     content = await download_and_transcribe(url)
     user_data_store[user_id]["content"] = content
 
     if content.get("subtitles"):
+        method = "Whisper API" if content.get("transcription_method") == "whisper-api" else "субтитры"
         await update.message.reply_text(
-            f"✅ Транскрипция готова ({content.get('duration', '?')})\n\n"
-            f"Первые слова: «{content['subtitles'][:150]}...»\n\n"
+            f"✅ Транскрипция готова через {method} ({content.get('duration', '?')})\n\n"
+            f"«{content['subtitles'][:200]}...»\n\n"
             "👁 Сколько просмотров? (например: 3.2М или 850К)"
+        )
+    elif content.get("whisper_error"):
+        await update.message.reply_text(
+            f"⚠️ Ошибка транскрипции: {content['whisper_error'][:100]}\n\n"
+            "Продолжим анализ по метрикам и описанию.\n\n"
+            "👁 Сколько просмотров?"
         )
     else:
         await update.message.reply_text(
-            "⚠️ Субтитры не найдены, но продолжим по метрикам.\n\n"
+            "⚠️ Аудио не удалось скачать (Instagram ограничивает доступ).\n\n"
+            "Продолжим анализ по метрикам — это тоже даёт хороший результат.\n\n"
             "👁 Сколько просмотров? (например: 3.2М или 850К)"
         )
 
