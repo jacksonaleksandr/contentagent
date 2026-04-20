@@ -5,10 +5,10 @@ import asyncio
 import subprocess
 import tempfile
 import json
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler
+    filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import anthropic
 import gspread
@@ -600,31 +600,122 @@ async def ref_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОСТАЛЬНЫЕ КОМАНДЫ
 # ══════════════════════════════════════════
 
+def main_menu():
+    keyboard = [
+        [
+            InlineKeyboardButton("📥 Добавить референс", callback_data="menu_ref"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Паттерны базы", callback_data="menu_patterns"),
+            InlineKeyboardButton("📤 Экспорт", callback_data="menu_export"),
+        ],
+        [
+            InlineKeyboardButton("🪝 Хуки", callback_data="menu_hooks"),
+            InlineKeyboardButton("🎬 Reels", callback_data="menu_reels"),
+        ],
+        [
+            InlineKeyboardButton("🎥 YouTube", callback_data="menu_youtube"),
+            InlineKeyboardButton("📝 Тексты", callback_data="menu_texts"),
+        ],
+        [
+            InlineKeyboardButton("✈️ Telegram посты", callback_data="menu_telegram"),
+            InlineKeyboardButton("📅 Контент-план", callback_data="menu_plan"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """👋 Привет! Я твой контент-агент на Claude.
+    await update.message.reply_text(
+        "👋 Привет! Я твой контент-агент на Claude.\n\nВыбери что хочешь сделать:",
+        reply_markup=main_menu()
+    )
 
-━━━━━━━━━━━━━━━━━━
-📥 РЕФЕРЕНСЫ
-━━━━━━━━━━━━━━━━━━
-/ref [ссылка] — добавить видео в базу
-/patterns — анализ паттернов всей базы
-/export — выгрузить базу для Claude.ai
 
-━━━━━━━━━━━━━━━━━━
-✍️ ГЕНЕРАЦИЯ
-━━━━━━━━━━━━━━━━━━
-/hooks [тема] — 7 вариантов хуков
-/reels [тема] — сценарий Reels
-/youtube [тема] — сценарий YouTube
-/texts [тема] — описания и хэштеги
-/telegram [тема] — посты Telegram
-/plan — контент-план на неделю
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-━━━━━━━━━━━━━━━━━━
-📝 Пример:
-/ref https://instagram.com/reel/...
-/hooks как ИИ меняет работу видеографа"""
-    await update.message.reply_text(text)
+    # Показываем главное меню снова после любого действия
+    prompts_map = {
+        "menu_patterns": None,
+        "menu_export": None,
+        "menu_plan": None,
+    }
+
+    if data == "menu_ref":
+        await query.message.reply_text(
+            "📥 Отправь ссылку на Instagram Reels:\n\n"
+            "/ref https://www.instagram.com/reel/..."
+        )
+
+    elif data == "menu_patterns":
+        await query.message.reply_text("🔍 Анализирую базу референсов...")
+        result = await analyze_patterns()
+        for i in range(0, len(result), 4000):
+            await query.message.reply_text(result[i:i+4000])
+        await query.message.reply_text("Выбери следующее действие:", reply_markup=main_menu())
+
+    elif data == "menu_export":
+        await query.message.reply_text("📤 Готовлю файл для Claude.ai...")
+        content = await asyncio.to_thread(export_for_claude)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(content)
+            tmp_path = f.name
+        with open(tmp_path, "rb") as f:
+            await query.message.reply_document(
+                document=f,
+                filename="referensy_dlya_claude.txt",
+                caption="📎 Загрузи этот файл в Project Instructions в Claude.ai"
+            )
+        os.unlink(tmp_path)
+        await query.message.reply_text("Выбери следующее действие:", reply_markup=main_menu())
+
+    elif data == "menu_hooks":
+        await query.message.reply_text(
+            "🪝 Напиши тему для хуков:\n\n"
+            "/hooks как ИИ меняет работу видеографа"
+        )
+
+    elif data == "menu_reels":
+        await query.message.reply_text(
+            "🎬 Напиши тему для сценария Reels:\n\n"
+            "/reels топ-3 ИИ инструмента для видеографа"
+        )
+
+    elif data == "menu_youtube":
+        await query.message.reply_text(
+            "🎥 Напиши тему для сценария YouTube:\n\n"
+            "/youtube как я использую ИИ при съёмке"
+        )
+
+    elif data == "menu_texts":
+        await query.message.reply_text(
+            "📝 Напиши тему для текстов и описаний:\n\n"
+            "/texts топ-3 ИИ инструмента для видеографа"
+        )
+
+    elif data == "menu_telegram":
+        await query.message.reply_text(
+            "✈️ Напиши тему для постов Telegram:\n\n"
+            "/telegram как я использую ИИ при съёмке"
+        )
+
+    elif data == "menu_plan":
+        await query.message.reply_text("📅 Составляю контент-план с учётом референсов...")
+        result = await generate_plan()
+        for i in range(0, len(result), 4000):
+            await query.message.reply_text(result[i:i+4000])
+        await query.message.reply_text("Выбери следующее действие:", reply_markup=main_menu())
+
+    elif data == "menu_back":
+        await query.message.reply_text(
+            "Выбери действие:",
+            reply_markup=main_menu()
+        )
 
 
 async def cmd_patterns(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,6 +753,13 @@ async def cmd_hooks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_hooks(topic)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎬 Сделать Reels по этой теме", callback_data="menu_reels"),
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 
 async def cmd_reels(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,6 +771,13 @@ async def cmd_reels(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_reels(topic)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📝 Тексты и хэштеги", callback_data="menu_texts"),
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 
 async def cmd_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -684,6 +789,15 @@ async def cmd_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_youtube(topic)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📝 Тексты и хэштеги", callback_data="menu_texts"),
+            InlineKeyboardButton("✈️ Пост в Telegram", callback_data="menu_telegram"),
+        ],[
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 
 async def cmd_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -695,6 +809,13 @@ async def cmd_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_texts(topic)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✈️ Пост в Telegram", callback_data="menu_telegram"),
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 
 async def cmd_telegram_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -706,6 +827,13 @@ async def cmd_telegram_posts(update: Update, context: ContextTypes.DEFAULT_TYPE)
     result = await generate_telegram(topic)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📅 Контент-план", callback_data="menu_plan"),
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -714,6 +842,12 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_plan(extra)
     for i in range(0, len(result), 4000):
         await update.message.reply_text(result[i:i+4000])
+    await update.message.reply_text(
+        "Готово! Что дальше?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🏠 Меню", callback_data="menu_back")
+        ]])
+    )
 
 # ══════════════════════════════════════════
 # ЗАПУСК
@@ -747,6 +881,7 @@ def main():
     app.add_handler(CommandHandler("texts", cmd_texts))
     app.add_handler(CommandHandler("telegram", cmd_telegram_posts))
     app.add_handler(CommandHandler("plan", cmd_plan))
+    app.add_handler(CallbackQueryHandler(menu_callback))
 
     print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
